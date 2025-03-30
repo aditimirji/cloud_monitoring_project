@@ -1,0 +1,102 @@
+version: '3'
+
+services:
+  # API Server
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./api:/app
+    depends_on:
+      - kafka
+    # Run the API server and pipe its output to the Kafka producer
+    command: bash -c "python app.py | python /app/kafka_producer.py"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - LOG_TOPIC=application_logs
+
+  # Load Generator
+  load_generator:
+    build:
+      context: ./load_generator
+      dockerfile: Dockerfile
+    depends_on:
+      - api
+    environment:
+      - API_BASE_URL=http://api:5000/api
+
+  # Zookeeper (required for Kafka)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.0.1
+    platform: linux/amd64
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  # Kafka - Message Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.0.1
+    platform: linux/amd64
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:13
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: logs
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Kafka Consumer / Log Processor
+  log_processor:
+    build:
+      context: ./log_processor
+      dockerfile: Dockerfile
+    depends_on:
+      - kafka
+      - postgres
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - LOG_TOPIC=application_logs
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=logs
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+
+  # Grafana for Visualization
+  grafana:
+    image: grafana/grafana:8.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
